@@ -1,11 +1,13 @@
 package util
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/mypurecloud/platform-client-sdk-go/v179/platformclientv2"
 )
 
@@ -144,5 +146,68 @@ func TestUnitGetRetryAfterDelay_NegativeSeconds(t *testing.T) {
 	}
 	if delay != 0 {
 		t.Errorf("Expected delay 0 for negative seconds, got %v", delay)
+	}
+}
+
+// TestUnitRetryWhenExponentialBackoff verifies that RetryWhen uses true exponential backoff
+// (delay doubles each retry: 500ms * 2^i) rather than linear backoff ((i+1)*500ms).
+func TestUnitRetryWhenExponentialBackoff(t *testing.T) {
+	prevMax := SetMaxRetriesForTests(4)
+	defer SetMaxRetriesForTests(prevMax)
+
+	var delays []time.Duration
+	callCount := 0
+
+	alwaysRetry := func(resp *platformclientv2.APIResponse, additionalCodes ...int) bool {
+		return true
+	}
+
+	var prevCallTime time.Time
+	callSdk := func() (*platformclientv2.APIResponse, diag.Diagnostics) {
+		now := time.Now()
+		if callCount > 0 {
+			delays = append(delays, now.Sub(prevCallTime))
+		}
+		prevCallTime = now
+		callCount++
+		resp := &platformclientv2.APIResponse{
+			Response: &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Header:     make(http.Header),
+			},
+		}
+		return resp, diag.Diagnostics{diag.Diagnostic{
+			Severity: diag.Error,
+			Summary:  fmt.Sprintf("retry %d", callCount),
+		}}
+	}
+
+	_ = RetryWhen(alwaysRetry, callSdk)
+
+	// We set maxRetries=4, so callSdk is called 4 times.
+	// delays[0] = delay after call 1 (i=0): 500ms * 2^0 = 500ms
+	// delays[1] = delay after call 2 (i=1): 500ms * 2^1 = 1000ms
+	// delays[2] = delay after call 3 (i=2): 500ms * 2^2 = 2000ms
+	if len(delays) != 3 {
+		t.Fatalf("Expected 3 measured delays (4 retries), got %d", len(delays))
+	}
+
+	// Verify each delay is approximately double the previous (exponential growth).
+	// Allow ±20% tolerance for timing variance.
+	for i, measuredDelay := range delays {
+		expected := time.Duration(1<<uint(i)) * 500 * time.Millisecond
+		ratio := float64(measuredDelay) / float64(expected)
+		if ratio < 0.8 || ratio > 1.2 {
+			t.Errorf("Delay[%d]: expected ~%v (exponential backoff 500ms*2^%d), got %v (ratio=%.2f)", i, expected, i, measuredDelay, ratio)
+		}
+	}
+
+	// Also verify exponential growth: each delay should be roughly double the previous.
+	// delays[1] / delays[0] ≈ 2, delays[2] / delays[1] ≈ 2
+	for i := 1; i < len(delays); i++ {
+		ratio := float64(delays[i]) / float64(delays[i-1])
+		if ratio < 1.6 || ratio > 2.4 {
+			t.Errorf("Expected exponential doubling between delay[%d] (%v) and delay[%d] (%v), got ratio=%.2f", i-1, delays[i-1], i, delays[i], ratio)
+		}
 	}
 }

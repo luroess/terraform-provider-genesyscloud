@@ -93,6 +93,7 @@ func SetMaxRetriesForTests(retries int) (previous int) {
 // RetryWhen Retries up to 10 times while the shouldRetry condition returns true
 // Useful for adding custom retry logic to normally non-retryable error codes
 // Respects Retry-After header if present, otherwise uses exponential backoff
+// (delay doubles each retry: 500ms, 1s, 2s, 4s, ..., capped at 30s)
 func RetryWhen(shouldRetry checkResponseFunc, callSdk callSdkFunc, additionalCodes ...int) diag.Diagnostics {
 	var lastErr diag.Diagnostics
 	for i := 0; i < maxRetries; i++ {
@@ -104,8 +105,13 @@ func RetryWhen(shouldRetry checkResponseFunc, callSdk callSdkFunc, additionalCod
 				if delay, ok := GetRetryAfterDelay(resp); ok {
 					time.Sleep(delay)
 				} else {
-					// Fall back to exponential backoff if no Retry-After header
-					time.Sleep(time.Duration((i+1)*500) * time.Millisecond) // total 27.5 seconds for the 10 retries with exponential backoff on each retry
+					// Exponential backoff: delay doubles each retry (500ms * 2^i), capped at 30s
+					delay := time.Duration(1<<uint(i)) * 500 * time.Millisecond
+					const maxDelay = 30 * time.Second
+					if delay > maxDelay {
+						delay = maxDelay
+					}
+					time.Sleep(delay)
 				}
 				continue
 			} else {
