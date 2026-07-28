@@ -115,9 +115,8 @@ func ResourceIntegrationAction() *schema.Resource {
 				Computed:    true,
 			},
 			"zip_id": {
-				Description: "The ID of the uploaded zip file containing the function code.",
+				Description: "The ID assigned by Genesys Cloud to the uploaded function zip file.",
 				Type:        schema.TypeString,
-				Optional:    true,
 				Computed:    true,
 			},
 			"file_path": {
